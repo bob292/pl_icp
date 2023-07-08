@@ -23,7 +23,7 @@
 using namespace Eigen;
 using namespace std;
 
-#define MAX_DIS 5
+#define MAX_DIS 10//2.3
 
 // created for ceres
 struct Pl_ICP 
@@ -51,6 +51,12 @@ struct Pl_ICP
             Eigen::Matrix<T,3,1> AB = lpb  - lpa;
             Eigen::Matrix<T,3,1> AC = lp -lpa ;
             Eigen::Matrix<T,3,1> abCrossac = AB.cross(AC);
+            /*cout<<"abcrossac norm: "<<(abCrossac.norm())<<endl;
+            cout<<"AB norm: "<<(AB.norm())<<endl;
+            if(AB.norm()==abCrossac.norm())
+            {
+                cout<<"cp: "<<cp[0]<<cp[1]<<cp[2]<<" lpa: "<<lpa[0]<<lpa[1]<<lpa[2]<<" lpb: "<<lpb[0]<<lpb[1]<<lpb[2]<<endl;
+            }*/
             residual[0] = (abCrossac.norm())/ (AB.norm()); //一个点的cost function:点线距离
             //residual[0] = AC.norm();
             return true;
@@ -85,7 +91,8 @@ void loadData(const string &path,
     vector<vector<double>> coordi2;
     
     if(reader.parse(srcFile, root))
-    {
+    {   
+        cout<<"root.size()"<<root.size()<<endl;
         for(int i=frame_index; i<frame_index + 1/*i< root.size()*/; i++)//each frame
         {
             vector<double> position;
@@ -181,213 +188,257 @@ void loadData(const string &path,
 }
 
 
-void runPl_ICP( Eigen::Quaterniond &pred_q,
-                 Eigen::Vector3d &pred_t,
-                 const Eigen::Isometry3d &T_pc, 
-                pcl::PointCloud<pcl::PointXYZI> &pre_cloud,
-                pcl::PointCloud<pcl::PointXYZI> &currentxyzi_cloud){
-                cout<<"Start PL-ICP"<<endl;
-                pcl::PointCloud<pcl::PointXYZI>::Ptr transformedxyzi_cloud(new pcl::PointCloud<pcl::PointXYZI>());
+void runPL_ICP( string path){
+                    pcl::visualization::PCLVisualizer::Ptr visualizer(new pcl::visualization::PCLVisualizer("PointCloud Visualizer"));
+                    visualizer->setBackgroundColor(0, 0, 0);
 
-                cout<<"Transform point cloud"<<endl;
-                pcl::transformPointCloud(pre_cloud,*transformedxyzi_cloud, T_pc.matrix());
-                //*transformedxyzi_cloud += pre_cloud;
-                /*for(auto point : *transformedxyzi_cloud){
-                    cout<<point.x<<" "<<point.y<<" "<<point.z<<" "<<point.intensity<<endl;
-                }*/
-                /************************************************************************
-                 try xyz point
-                ***********************************************************************/
-                cout<<"start transforming transformed cloud to xyz point"<<endl;
-                pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-                transformed_cloud->width = transformedxyzi_cloud->width;
-                transformed_cloud->height = 1;
-                transformed_cloud->points.resize(transformed_cloud->width*transformed_cloud->height);
-                for (int i=0; i< transformedxyzi_cloud->points.size();i++)
-                {
-                    transformed_cloud->points[i].x = transformedxyzi_cloud->points[i].x;
-                    transformed_cloud->points[i].y = transformedxyzi_cloud->points[i].y;
-                    transformed_cloud->points[i].z = transformedxyzi_cloud->points[i].z;
-                }
+                    Eigen::Isometry3d cur_T = Eigen::Isometry3d::Identity();
+                    pcl::PointCloud<pcl::PointXYZI> currentxyzi_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> cur_ld_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> cur_pc_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> cur_rb_cloud;
+                    cout<<"Load scan current"<<endl;
+                    loadData(path, 2, cur_T, currentxyzi_cloud, cur_ld_cloud, cur_pc_cloud, cur_rb_cloud);
+                    cout<<"pose"<<"\n"<<cur_T.matrix()<<endl;
 
-                cout<<"start transforming current cloud to xyz point"<<endl;
-                pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud(new pcl::PointCloud<pcl::PointXYZ>());
-                current_cloud->width = currentxyzi_cloud.width;
-                current_cloud->height = 1;
-                current_cloud->points.resize(current_cloud->width*current_cloud->height);
-                for (int j=0; j< currentxyzi_cloud.points.size();j++)
-                {   
-                    current_cloud->points[j].x = currentxyzi_cloud.points[j].x;
-                    current_cloud->points[j].y = currentxyzi_cloud.points[j].y;
-                    current_cloud->points[j].z = currentxyzi_cloud.points[j].z;
-                }
-
-                //将local_map的点云数据输入到kdtree当中，方便后续查找
-                pcl::KdTreeFLANN<pcl::PointXYZ> pcl_kdtree_ptr_;
-                pcl_kdtree_ptr_.setInputCloud(transformed_cloud);
-                //pcl_kdtree_ptr_.setInputCloud(current_cloud);
+                    Eigen::Isometry3d prev_T = Eigen::Isometry3d::Identity();
+                    pcl::PointCloud<pcl::PointXYZI> prev_entire_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> prev_ld_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> prev_pc_cloud;
+                    pcl::PointCloud<pcl::PointXYZI> prev_rb_cloud;
+                    cout<<"Load scan current"<<endl;
+                    loadData(path, 0, prev_T, prev_entire_cloud, prev_ld_cloud, prev_pc_cloud, prev_rb_cloud);
+                    cout<<"pose"<<"\n"<<prev_T.matrix()<<endl;
+                    
+                    cout<<"Start PL-ICP"<<endl;
+                    pcl::PointCloud<pcl::PointXYZI>::Ptr transformedxyzi_cloud(new pcl::PointCloud<pcl::PointXYZI>());
+                    Eigen::Isometry3d T_pc = Eigen::Isometry3d::Identity();
+                    //Eigen::Isometry3d T_pc = cur_T.inverse()*prev_T;
+                    cout<<"Transform point cloud"<<endl;
+                    Eigen::Matrix4d T_gt;
+                    T_gt <<   0.99983,   0.0197867,  0.00104382,  -0.0368728,
+                            -0.019798,     0.99978, -0.00102556,    0.925434,
+                            -0.00107379,  0.00100462,     0.99999, -0.00042957,
+                            0,           0,           0,           1;
+                    T_gt = T_gt.inverse().eval();
+                    pcl::transformPointCloud(prev_entire_cloud,*transformedxyzi_cloud, T_pc.matrix());
                 
-                //将当前帧得到的二维激光点云每个点查找之前输入kdtree中的local_map最近的两个点云进行残差块的输入
-                const int point_num = current_cloud->points.size();
-                cout<<"Load settings"<<endl;
-                struct {
-                // 1. quaternion parameterization:
-                ceres::LocalParameterization *q_parameterization_ptr{nullptr};
-                // 2. loss function:
-                ceres::LossFunction *loss_function_ptr{nullptr};
-                // 3. solver:
-                ceres::Solver::Options options;
-                } config_;
-
-                // target variables:
-                struct {
-                double q[4] = {0.0, 0.0, 0.0, 1.0};
-                double t[3] = {0.0, 0.0, 0.0};
-                } param_;
-                ceres::Problem problem_;
-                //configs
-                {//后续判断加入的优化变量纬度是否准确
-                config_.q_parameterization_ptr = new ceres::EigenQuaternionParameterization();
-                //验证是否优化变量的纬度是否正确
-                problem_.AddParameterBlock(param_.q, 4, config_.q_parameterization_ptr);
-                problem_.AddParameterBlock(param_.t, 3);
-                config_.loss_function_ptr =  new ceres::CauchyLoss(0.1);
-                //据帧求解方法
-                config_.options.linear_solver_type = ceres::DENSE_QR;
-                // 
                 
-                config_.options.minimizer_type = ceres::TRUST_REGION;
-                config_.options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;//ceres::DOGLEG;
-                config_.options.use_nonmonotonic_steps = true;//new try
-                config_.options.dogleg_type = ceres::SUBSPACE_DOGLEG;
-                config_.options.num_threads = 8;
-                config_.options.max_num_iterations = 500;
-                config_.options.minimizer_progress_to_stdout = false;
-                config_.options.max_solver_time_in_seconds = 0.10;}
-
-                cout<<"formulating the pl-icp"<<endl;
-                //ros::Time start_time = ros::Time::now();
-                for(int i = 0;  i < point_num; ++i){
-                    std::vector<int> corr_ind; //index
-                    std::vector<float> corr_sq_dis; //
-                    pcl_kdtree_ptr_.nearestKSearch(
-                        current_cloud->points[i],
-                        2,
-                        corr_ind, corr_sq_dis
-                    );
-                    if(corr_sq_dis[0] > MAX_DIS){
-                        continue;
+                    //*transformedxyzi_cloud += pre_cloud;
+                    /*for(auto point : *transformedxyzi_cloud){
+                        cout<<point.x<<" "<<point.y<<" "<<point.z<<" "<<point.intensity<<endl;
+                    }*/
+                    /************************************************************************
+                     try xyz point
+                    ***********************************************************************/
+                    cout<<"start transforming transformed cloud to xyz point"<<endl;
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+                    transformed_cloud->width = transformedxyzi_cloud->width;
+                    transformed_cloud->height = 1;
+                    transformed_cloud->points.resize(transformed_cloud->width*transformed_cloud->height);
+                    for (int i=0; i< transformedxyzi_cloud->points.size();i++)
+                    {
+                        transformed_cloud->points[i].x = transformedxyzi_cloud->points[i].x;
+                        transformed_cloud->points[i].y = transformedxyzi_cloud->points[i].y;
+                        transformed_cloud->points[i].z = transformedxyzi_cloud->points[i].z;
                     }
-        
-                    //TODO cerese PL-ICP
-        
-                    Eigen::Vector3d cp{current_cloud->points[i].x,current_cloud->points[i].y,current_cloud->points[i].z};
-                    Eigen::Vector3d lpa{transformed_cloud->points[corr_ind[0]].x,transformed_cloud->points[corr_ind[0]].y,transformed_cloud->points[corr_ind[0]].z};
-                    Eigen::Vector3d lpb{transformed_cloud->points[corr_ind[1]].x,transformed_cloud->points[corr_ind[1]].y,transformed_cloud->points[corr_ind[1]].z};
-                    cout<<"cp: "<<cp[2]<<" lpa: "<<lpa[2]<<" lpb: "<<lpb[2]<<endl;
-                    ceres::CostFunction *factor_plicp = Pl_ICP::Create(
-                        cp,
-                        lpa,
-                        lpb
-                    );
+                    visualizer->addPointCloud<pcl::PointXYZ>(transformed_cloud,"previous cloud");
 
-                    problem_.AddResidualBlock(
-                        factor_plicp,
-                        nullptr,//config_.loss_function_ptr,
-                        param_.q, param_.t
-                    );
-        
-                }
-                
-                // solve:
-                ceres::Solver::Summary summary;
+                    cout<<"start transforming current cloud to xyz point"<<endl;
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+                    current_cloud->width = currentxyzi_cloud.width;
+                    current_cloud->height = 1;
+                    current_cloud->points.resize(current_cloud->width*current_cloud->height);
+                    for (int j=0; j< currentxyzi_cloud.points.size();j++)
+                    {   
+                        current_cloud->points[j].x = currentxyzi_cloud.points[j].x;
+                        current_cloud->points[j].y = currentxyzi_cloud.points[j].y;
+                        current_cloud->points[j].z = currentxyzi_cloud.points[j].z;
+                    }
+                    //visualizer->addPointCloud<pcl::PointXYZ>(current_cloud,"current cloud");
+                    
 
-                ceres::Solve(config_.options, &problem_, &summary);
-                std::cout << " solve q , t completed " << std::endl;
-                std::cout << summary.FullReport() << "\n";
+                    //将local_map的点云数据输入到kdtree当中，方便后续查找
+                    pcl::KdTreeFLANN<pcl::PointXYZ> pcl_kdtree_ptr_;
+                    pcl_kdtree_ptr_.setInputCloud(transformed_cloud);
+                    //pcl_kdtree_ptr_.setInputCloud(current_cloud);
+                    
+                    //将当前帧得到的二维激光点云每个点查找之前输入kdtree中的local_map最近的两个点云进行残差块的输入
+                    const int point_num = current_cloud->points.size();
+                    cout<<"Load settings"<<endl;
+                    struct {
+                    // 1. quaternion parameterization:
+                    ceres::LocalParameterization *q_parameterization_ptr{nullptr};
+                    // 2. loss function:
+                    ceres::LossFunction *loss_function_ptr{nullptr};
+                    // 3. solver:
+                    ceres::Solver::Options options;
+                    } config_;
 
-                Eigen::Quaterniond q{param_.q[3],param_.q[0],param_.q[1],param_.q[2]};
-                Eigen::Vector3d t{param_.t[0],param_.t[1],param_.t[2]};
-                q.normalize();
-                std::cout  << " q.w() : " << q.w()<< " q.x() : " << q.x()<< " q.y() : " << q.y()<< " q.z() : " << q.z()<< std::endl;
-                pred_q = q;
-                pred_t = t;
-                cout<<"t: "<<t[0]<<" "<<t[1]<<" "<<t[2]<<endl;
+                    // target variables:
+                    struct {
+                    double q[4] = {0.0, 0.0, 0.0, 1.0};
+                    double t[3] = {0.0, 0.0, 0.0};
+                    } param_;
+                    ceres::Problem problem_;
+                    //configs
+                    {//后续判断加入的优化变量纬度是否准确
+                    config_.q_parameterization_ptr = new ceres::EigenQuaternionParameterization();
+                    //验证是否优化变量的纬度是否正确
+                    problem_.AddParameterBlock(param_.q, 4, config_.q_parameterization_ptr);
+                    problem_.AddParameterBlock(param_.t, 3);
+                    config_.loss_function_ptr =  new ceres::CauchyLoss(0.1);
+                    //据帧求解方法
+                    config_.options.linear_solver_type = ceres::DENSE_QR;
+                    // 
+                    
+                    config_.options.minimizer_type = ceres::TRUST_REGION;
+                    config_.options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;//ceres::DOGLEG;
+                    config_.options.use_nonmonotonic_steps = true;//new try
+                    config_.options.initial_trust_region_radius = 1e6;//new try         
+                    config_.options.dogleg_type = ceres::SUBSPACE_DOGLEG;
+                    config_.options.num_threads = 8;
+                    config_.options.max_num_iterations = 500;
+                    config_.options.minimizer_progress_to_stdout = true;
+                    config_.options.max_solver_time_in_seconds = 0.5;}
 
-                //ros::Time end_time = ros::Time::now();
-                //ros::Duration use_time = end_time - start_time;
-                //std::cout << " use time : " << use_time.toSec() << std::endl;
-                return;
+                    cout<<"formulating the pl-icp"<<endl;
+                    //ros::Time start_time = ros::Time::now();
+                    for(int i = 0;  i < point_num; ++i){
+                        std::vector<int> corr_ind; //index
+                        std::vector<float> corr_sq_dis; //
+                        pcl_kdtree_ptr_.nearestKSearch(
+                            current_cloud->points[i],
+                            2,
+                            corr_ind, corr_sq_dis
+                        );
+                        if(corr_sq_dis[0] > MAX_DIS){
+                            continue;
+                        }
+                        
+            
+                        //TODO cerese PL-ICP
+            
+                        Eigen::Vector3d cp{current_cloud->points[i].x,current_cloud->points[i].y,current_cloud->points[i].z};
+                        Eigen::Vector3d lpa{transformed_cloud->points[corr_ind[0]].x,transformed_cloud->points[corr_ind[0]].y,transformed_cloud->points[corr_ind[0]].z};
+                        Eigen::Vector3d lpb{transformed_cloud->points[corr_ind[1]].x,transformed_cloud->points[corr_ind[1]].y,transformed_cloud->points[corr_ind[1]].z};
+                        if(lpa == lpb){
+                            cout<<"same point "<<corr_ind[0]<<" "<<corr_ind[1]<<endl;
+                            continue;
+                        }
+                        ceres::CostFunction *factor_plicp = Pl_ICP::Create(
+                            cp,
+                            lpa,
+                            lpb
+                        );
+
+                        problem_.AddResidualBlock(
+                            factor_plicp,
+                            nullptr,//config_.loss_function_ptr,
+                            param_.q, param_.t
+                        );
+            
+                    }
+                    
+                    // solve:
+                    ceres::Solver::Summary summary;
+
+                    ceres::Solve(config_.options, &problem_, &summary);
+                    std::cout << " solve q , t completed " << std::endl;
+                    std::cout << summary.FullReport() << "\n";
+
+                    Eigen::Quaterniond q{param_.q[3],param_.q[0],param_.q[1],param_.q[2]};
+                    Eigen::Vector3d t{param_.t[0],param_.t[1],param_.t[2]};
+                    q.normalize();
+                    std::cout  << " q.w() : " << q.w()<< " q.x() : " << q.x()<< " q.y() : " << q.y()<< " q.z() : " << q.z()<< std::endl;
+                    cout<<"t: "<<t[0]<<" "<<t[1]<<" "<<t[2]<<endl;
+
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+                    Eigen::Isometry3d out_T = Eigen::Isometry3d::Identity();
+                    out_T.rotate(q);
+                    out_T.pretranslate(t);
+                    //Eigen::Matrix4d final_T = out_T.matrix()*T_gt;
+                    pcl::transformPointCloud(*current_cloud,*output_cloud,out_T.matrix());
+                    pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> single_color(output_cloud, 0, 255, 0);
+                    visualizer->addPointCloud<pcl::PointXYZ>(output_cloud,single_color,"output cloud");
+                    //ros::Time end_time = ros::Time::now();
+                    //ros::Duration use_time = end_time - start_time;
+                    //std::cout << " use time : " << use_time.toSec() << std::endl;
+
+                    visualizer->setPointCloudRenderingProperties(
+                    pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "PointCloud");
+                    visualizer->addCoordinateSystem(5.0);
+
+                    while (!visualizer->wasStopped()) {
+                    visualizer->spinOnce(100);}
+                    return;
 }
 
-int main(){
-    string path = "/root/bev_fusion/pl_icp/output_demo.json";
-    int frmdx;
-    
+void runICP(string path){
+    cout<<"start ICP"<<endl;
     pcl::visualization::PCLVisualizer::Ptr visualizer(new pcl::visualization::PCLVisualizer("PointCloud Visualizer"));
     visualizer->setBackgroundColor(0, 0, 0);
-
-    
-    //current scan
-    frmdx = 3;
-    Eigen::Isometry3d cur_T = Eigen::Isometry3d::Identity();
-    pcl::PointCloud<pcl::PointXYZI> cur_entire_cloud;
-    pcl::PointCloud<pcl::PointXYZI> cur_ld_cloud;
-    pcl::PointCloud<pcl::PointXYZI> cur_pc_cloud;
-    pcl::PointCloud<pcl::PointXYZI> cur_rb_cloud;
-    cout<<"Load current scan"<<endl;
-    loadData(path, frmdx, cur_T, cur_entire_cloud, cur_ld_cloud, cur_pc_cloud, cur_rb_cloud);
-    cout<<"current pose"<<"\n"<<cur_T.matrix()<<endl;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cur_entire_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
-    *cur_entire_cloud_ptr += cur_entire_cloud;
-    visualizer->addPointCloud<pcl::PointXYZI>(cur_entire_cloud_ptr,"current cloud");
-    
-
-
-    //previous scan
-    frmdx = 0;
-    Eigen::Isometry3d pre_T = Eigen::Isometry3d::Identity();
-    pcl::PointCloud<pcl::PointXYZI> pre_entire_cloud;
-    pcl::PointCloud<pcl::PointXYZI> pre_ld_cloud;
-    pcl::PointCloud<pcl::PointXYZI> pre_pc_cloud;
-    pcl::PointCloud<pcl::PointXYZI> pre_rb_cloud;
-    cout<<"Load previous scan"<<endl;
-    loadData(path, frmdx, pre_T, pre_entire_cloud, pre_ld_cloud, pre_pc_cloud, pre_rb_cloud);
-    cout<<"previous pose"<<"\n"<<pre_T.matrix()<<endl;
-
-    Eigen::Quaterniond q;
-    Eigen::Vector3d t;
-    Eigen::Isometry3d T_pc= Eigen::Isometry3d::Identity();
-    T_pc = cur_T.inverse()*pre_T;
-    cout<<"T_pc"<<"\n"<<T_pc.matrix()<<endl;
-    /************************************************************************
-     try pcl icp
-    *************************************************************************/
-    pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
-    pcl::PointCloud<pcl::PointXYZI>::Ptr transformedxyzi_cloud(new pcl::PointCloud<pcl::PointXYZI>);
-    pcl::transformPointCloud(pre_entire_cloud,*transformedxyzi_cloud,(Eigen::Isometry3d::Identity()).matrix());
-    icp.setInputSource(transformedxyzi_cloud);
-    icp.setInputTarget(cur_entire_cloud_ptr);
-    icp.setMaximumIterations(100);
-    icp.setMaxCorrespondenceDistance(MAX_DIS);
-    icp.align(*transformedxyzi_cloud);
-    bool icp_succeeded_or_not = icp.hasConverged();
-    double match_score = icp.getFitnessScore();
-    Eigen::Matrix4d transform_pred = icp.getFinalTransformation().cast<double>();
-    /************************************************************************
-     try pl_icp
-    *************************************************************************/
-    /*runPl_ICP(q, t, T_pc, pre_entire_cloud, cur_entire_cloud);
-
-    Eigen::Isometry3d T_pred = Eigen::Isometry3d::Identity();
-    T_pred.rotate(q);
-    T_pred.pretranslate(t);
-    pcl::PointCloud<pcl::PointXYZI>::Ptr transformedxyzi_cloud(new pcl::PointCloud<pcl::PointXYZI>);*/
-    pcl::transformPointCloud(pre_entire_cloud,*transformedxyzi_cloud,transform_pred);
-    //cout<<"transform: "<<"\n"<<(T_pred*T_pc).matrix()<<endl;
-    pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> single_color(transformedxyzi_cloud, 0, 255, 0);
-    visualizer->addPointCloud<pcl::PointXYZI>(transformedxyzi_cloud,single_color,"previous cloud");
-
+    pcl::PointCloud<pcl::PointXYZI>::Ptr global_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr cur_ld_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr cur_pc_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr cur_rb_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    Eigen::Matrix4d T = Eigen::Isometry3d::Identity().matrix();
+    deque<pcl::PointCloud<pcl::PointXYZI>> window;
+    for(int i = 0; i< 20; i++)
+    {
+        Eigen::Isometry3d cur_T = Eigen::Isometry3d::Identity();
+        pcl::PointCloud<pcl::PointXYZI> cur_entire_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_ld_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_pc_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_rb_cloud;
+        cout<<"Load scan "<<i<<endl;
+        loadData(path, i, cur_T, cur_entire_cloud, cur_ld_cloud, cur_pc_cloud, cur_rb_cloud);
+        cout<<"pose"<<"\n"<<cur_T.matrix()<<endl;
+        pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI> icp;
+        icp.setMaximumIterations(100);
+        icp.setMaxCorrespondenceDistance(MAX_DIS);
+        if(i==0)
+        {
+            *global_cloud = cur_entire_cloud;
+            *cur_ld_cloud_ptr = cur_ld_cloud;
+            *cur_pc_cloud_ptr = cur_pc_cloud;
+            *cur_rb_cloud_ptr = cur_rb_cloud;
+            window.push_back(cur_entire_cloud);
+            //visualizer->addPointCloud<pcl::PointXYZI>(global_cloud,"current cloud");
+        }
+        else
+        {
+            pcl::PointCloud<pcl::PointXYZI>::Ptr local_map(new pcl::PointCloud<pcl::PointXYZI>);
+            for(int j =0;j<window.size();j++)
+            {
+                *local_map += window[j];
+            }
+            pcl::PointCloud<pcl::PointXYZI>::Ptr source_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            //pcl::transformPointCloud(pre_entire_cloud,*transformedxyzi_cloud,(Eigen::Isometry3d::Identity()).matrix());
+            *source_cloud += cur_entire_cloud;
+            icp.setInputSource(source_cloud);
+            icp.setInputTarget(local_map);
+            icp.align(*source_cloud);
+            //bool icp_succeeded_or_not = icp.hasConverged();
+            //double match_score = icp.getFitnessScore();
+            Eigen::Matrix4d transform_pred = icp.getFinalTransformation().cast<double>();
+            T = T * transform_pred;
+            cout<<"transform predict: "<<"\n"<<transform_pred<<endl;
+            string name = "cloud " + to_string(i);
+            pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            pcl::transformPointCloud(cur_entire_cloud,*transformed_cloud,transform_pred);
+            //visualizer->addPointCloud<pcl::PointXYZI>(transformed_cloud,name);
+            *global_cloud += *source_cloud;//*transformed_cloud;
+            if(window.size()>=20)
+            {
+                window.pop_front();
+            }
+            window.push_back(*source_cloud);
+                
+        }
+        
+    }
+    visualizer->addPointCloud<pcl::PointXYZI>(global_cloud);
     visualizer->setPointCloudRenderingProperties(
     pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "PointCloud");
     visualizer->addCoordinateSystem(5.0);
@@ -395,11 +446,10 @@ int main(){
     while (!visualizer->wasStopped()) {
     visualizer->spinOnce(100);}
 
-
-
-
-
-
+}
+int main(){
+    string path = "/root/bev_fusion/pl_icp/output_demo.json";
+    runICP(path);
 
     return 0;
 }

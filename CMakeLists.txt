@@ -19,7 +19,7 @@ add_executable(pl_icp pl_icp.cpp)
 # include_directories(${CMAKE_SOURCE_DIR} src)
 
 include_directories( ${CERES_INCLUDE_DIRS}
-                     )
+                     include)
  
 # link_libraries(pthread)
 

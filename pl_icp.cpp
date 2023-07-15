@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <eigen3/Eigen/Dense>
 #include <ceres/ceres.h>
 
@@ -16,14 +17,18 @@
 #include <json/json.h>
 #include <json/value.h>
 #include <fstream>
+#include <algorithm>
 
 #include <vector>
 #include <string>
+
+#include "dbscan.h"
 
 using namespace Eigen;
 using namespace std;
 
 #define MAX_DIS 10//2.3
+# define M_PI_2		1.57079632679489661923
 
 // created for ceres
 struct Pl_ICP 
@@ -69,6 +74,29 @@ struct Pl_ICP
             Eigen::Vector3d curr_point, last_point_a, last_point_b;
     };
 
+Eigen::Vector3d Quaterniond2EulerAngles(Eigen::Quaterniond q) {
+  Eigen::Vector3d angles;
+
+  // roll (x-axis rotation)
+  double sinr_cosp = 2 * (q.w() * q.x() + q.y() * q.z());
+  double cosr_cosp = 1 - 2 * (q.x() * q.x() + q.y() * q.y());
+  angles(2) = std::atan2(sinr_cosp, cosr_cosp);
+
+  // pitch (y-axis rotation)
+  double sinp = 2 * (q.w() * q.y() - q.z() * q.x());
+  if (std::abs(sinp) >= 1)
+    angles(1) = std::copysign(M_PI / 2, sinp); // use 90 degrees if out of range
+  else
+    angles(1) = std::asin(sinp);
+
+  // yaw (z-axis rotation)
+  double siny_cosp = 2 * (q.w() * q.z() + q.x() * q.y());
+  double cosy_cosp = 1 - 2 * (q.y() * q.y() + q.z() * q.z());
+  angles(0) = std::atan2(siny_cosp, cosy_cosp);
+
+  return angles;
+}
+
 //create pcl point cloud from .json file
 void loadData(const string &path,
                 const int &frame_index,
@@ -109,8 +137,12 @@ void loadData(const string &path,
             {
                 rotation.push_back(root[i]["qua"][p].asDouble());
             }
-            Eigen::Quaternion<double> q(Eigen::Vector4d(rotation[0],rotation[1],rotation[2],rotation[3]));
-            T.rotate(q);
+            Eigen::Quaternion<double> q(rotation[3],rotation[0],rotation[1],rotation[2]);
+            Eigen::Vector3d euler = Quaterniond2EulerAngles(q);
+            double yaw = euler(2);
+            //cout<<"yaw"<<yaw<<endl;
+            Eigen::AngleAxisd rot_vect (-1*(yaw - M_PI_2), Eigen::Vector3d(0,0,1));
+            T.rotate(rot_vect);
             T.pretranslate(t);
 
             double timestamp = root[i]["ts"].asDouble();//.asString();
@@ -187,6 +219,18 @@ void loadData(const string &path,
     return ;
 }
 
+void savetocsv(string path, pcl::PointCloud<pcl::PointXYZI>::Ptr cloud){
+    ofstream myfile;
+    myfile.open(path);
+    cout<<"width: "<<cloud->width<<" height: "<<cloud->height<<endl;
+    for(int i=0; i<cloud->points.size(); ++i)
+    {
+        myfile << cloud->points[i].x
+        <<","<<cloud->points[i].y<<"\n";
+    }
+    myfile.close();
+    return ;
+}
 
 void runPL_ICP( string path){
                     pcl::visualization::PCLVisualizer::Ptr visualizer(new pcl::visualization::PCLVisualizer("PointCloud Visualizer"));
@@ -384,6 +428,7 @@ void runICP(string path){
     pcl::PointCloud<pcl::PointXYZI>::Ptr cur_rb_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
     Eigen::Matrix4d T = Eigen::Isometry3d::Identity().matrix();
     deque<pcl::PointCloud<pcl::PointXYZI>> window;
+    Eigen::Isometry3d init_T = Eigen::Isometry3d::Identity();
     for(int i = 0; i< 20; i++)
     {
         Eigen::Isometry3d cur_T = Eigen::Isometry3d::Identity();
@@ -399,6 +444,7 @@ void runICP(string path){
         icp.setMaxCorrespondenceDistance(MAX_DIS);
         if(i==0)
         {
+            init_T = cur_T;
             *global_cloud = cur_entire_cloud;
             *cur_ld_cloud_ptr = cur_ld_cloud;
             *cur_pc_cloud_ptr = cur_pc_cloud;
@@ -408,6 +454,10 @@ void runICP(string path){
         }
         else
         {
+            cur_T = init_T.inverse() * cur_T; 
+            pcl::PointCloud<pcl::PointXYZI>::Ptr CarPosetrans_cloud(new pcl::PointCloud<pcl::PointXYZI>);      
+            cout<<"car pose: "<<"\n"<<cur_T.matrix()<<endl;      
+            pcl::transformPointCloud(cur_entire_cloud,*CarPosetrans_cloud,cur_T.matrix());
             pcl::PointCloud<pcl::PointXYZI>::Ptr local_map(new pcl::PointCloud<pcl::PointXYZI>);
             for(int j =0;j<window.size();j++)
             {
@@ -416,24 +466,24 @@ void runICP(string path){
             pcl::PointCloud<pcl::PointXYZI>::Ptr source_cloud(new pcl::PointCloud<pcl::PointXYZI>);
             //pcl::transformPointCloud(pre_entire_cloud,*transformedxyzi_cloud,(Eigen::Isometry3d::Identity()).matrix());
             *source_cloud += cur_entire_cloud;
-            icp.setInputSource(source_cloud);
+            icp.setInputSource(CarPosetrans_cloud);//source_cloud);
             icp.setInputTarget(local_map);
-            icp.align(*source_cloud);
+            icp.align(*CarPosetrans_cloud);//source_cloud);
             //bool icp_succeeded_or_not = icp.hasConverged();
             //double match_score = icp.getFitnessScore();
             Eigen::Matrix4d transform_pred = icp.getFinalTransformation().cast<double>();
-            T = T * transform_pred;
+            //T = T * transform_pred;
             cout<<"transform predict: "<<"\n"<<transform_pred<<endl;
-            string name = "cloud " + to_string(i);
-            pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZI>);
-            pcl::transformPointCloud(cur_entire_cloud,*transformed_cloud,transform_pred);
+            //string name = "cloud " + to_string(i);
+            //pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            //pcl::transformPointCloud(cur_entire_cloud,*transformed_cloud,transform_pred);
             //visualizer->addPointCloud<pcl::PointXYZI>(transformed_cloud,name);
-            *global_cloud += *source_cloud;//*transformed_cloud;
+            *global_cloud += *CarPosetrans_cloud;//*source_cloud;//*transformed_cloud;
             if(window.size()>=20)
             {
                 window.pop_front();
             }
-            window.push_back(*source_cloud);
+            window.push_back(*CarPosetrans_cloud);
                 
         }
         
@@ -447,9 +497,76 @@ void runICP(string path){
     visualizer->spinOnce(100);}
 
 }
+
+void windowCurFit(string path){
+    pcl::visualization::PCLVisualizer::Ptr visualizer(new pcl::visualization::PCLVisualizer("PointCloud Visualizer"));
+    visualizer->setBackgroundColor(0, 0, 0);
+    
+    pcl::PointCloud<pcl::PointXYZI>::Ptr global_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr global_ld_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr global_pc_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr global_rb_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+    Eigen::Isometry3d init_T = Eigen::Isometry3d::Identity();
+    for(int i = 0; i< 20; i++)
+    {
+        Eigen::Isometry3d cur_T = Eigen::Isometry3d::Identity();
+        pcl::PointCloud<pcl::PointXYZI> cur_entire_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_ld_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_pc_cloud;
+        pcl::PointCloud<pcl::PointXYZI> cur_rb_cloud;
+        cout<<"Load scan "<<i<<endl;
+        loadData(path, i, cur_T, cur_entire_cloud, cur_ld_cloud, cur_pc_cloud, cur_rb_cloud);
+        cout<<"pose"<<"\n"<<cur_T.matrix()<<endl;
+        if(i==0)
+        {
+            init_T = cur_T;
+            *global_cloud = cur_entire_cloud;
+            *global_ld_cloud_ptr = cur_ld_cloud;
+            *global_pc_cloud_ptr = cur_pc_cloud;
+            *global_rb_cloud_ptr = cur_rb_cloud;
+        }
+        else
+        {
+            cur_T = init_T.inverse() * cur_T; 
+            pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_ld_cloud(new pcl::PointCloud<pcl::PointXYZI>);      
+            cout<<"car pose: "<<"\n"<<cur_T.matrix()<<endl;      
+            pcl::transformPointCloud(cur_ld_cloud,*transformed_ld_cloud,cur_T.matrix());
+            *global_ld_cloud_ptr += *transformed_ld_cloud;
+        }        
+    }
+    vector<vector<int>> clusters_index;
+    dbscan<pcl::PointXYZI>(global_ld_cloud_ptr,clusters_index,2.0,5);
+    string csvpath = "/root/bev_fusion/pl_icp/lanecloud.csv";
+    savetocsv(csvpath, global_ld_cloud_ptr);
+    int color = 255 / (clusters_index.size() + 5);
+    for(int i=0; i< clusters_index.size(); ++i)
+    {
+        sort(clusters_index[i].begin(),clusters_index[i].end());
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+        for(auto index : clusters_index[i])
+        {
+            *cluster_cloud += *global_ld_cloud_ptr;
+        }      
+        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZI> single_color(cluster_cloud, (i+1)*color, (i+1)*color, (i+1)*color);
+        pcl::visualization::PointCloudColorHandlerRandom<pcl::PointXYZI> rgb(cluster_cloud);
+        string name = "cloud " + to_string(i);
+        visualizer->addPointCloud<pcl::PointXYZI>(cluster_cloud,rgb, name);
+
+    }
+    visualizer->setPointCloudRenderingProperties(
+    pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "PointCloud");
+    visualizer->addCoordinateSystem(5.0);
+
+    while (!visualizer->wasStopped()) {
+    visualizer->spinOnce(100);}
+
+    
+}
+
 int main(){
     string path = "/root/bev_fusion/pl_icp/output_demo.json";
-    runICP(path);
+    //runICP(path);
+    windowCurFit(path);
 
     return 0;
 }
